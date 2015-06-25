@@ -50,6 +50,7 @@ void Mrf24j::reset(void) {
     delay(20);  // from manual
 }
 
+//Lê os registradores do rádio
 byte Mrf24j::read_short(byte address) {
     digitalWrite(_pin_cs, LOW);
     // 0 top for short addressing, 0 bottom for read
@@ -113,7 +114,7 @@ word Mrf24j::address16_read(void) {
  * Simple send 16, with acks, not much of anything.. assumes src16 and local pan only.
  * @param data
  */
-void Mrf24j::send16(word dest16, char * data) {
+int Mrf24j::send16(word dest16, char * data) {
     byte len = strlen(data); // get the length of the char* array
     int i = 0;
     write_long(i++, bytes_MHR); // header length
@@ -145,12 +146,62 @@ void Mrf24j::send16(word dest16, char * data) {
         write_long(i++, data[q]);
     }
     // ack on, and go!
-    write_short(MRF_TXNCON, (1<<MRF_TXNACKREQ | 1<<MRF_TXNTRIG));
+    write_short(MRF_TXNCON, (1<<MRF_TXNACKREQ | 1<<MRF_TXNTRIG)); //Seta os bits 0 e 2 do reg TXNCON.
+    
+    // Quando envia. TXIF é o bit 3 de INTSTAT 
+   /* if (MRF_I_TXNIF) {
+        flag_got_tx++;
+        uint8_t tmp = read_short(MRF_TXSTAT);
+        // 1 means it failed, we want 1 to mean it worked.
+        
+        // Esta operação serve para verigficar se todos os bits de TXSTAT são 0, exceto o bit 0 (TXNSTAT).
+        tx_info.tx_ok = !(tmp & ~(1 << TXNSTAT)); //TXNSTAT  é o bit 0 do reg TXSTAT 
+        tx_info.retries = tmp >> 6;				//Pega os bits 6 e 7. OS bits 6 e 7 representam as tentativas.
+        tx_info.channel_busy = (tmp & (1 << CCAFAIL)); //Pega o bit 5. CCAFAIL é o bit 5 de TXSTAT. Diz se o canal está ocupado(1) ou não (0). 
+    }*/
+    return len;
+}
+
+/**Criada para leitura sem interrupção. By Stephanie**/
+void Mrf24j::leitura(){
+// Quando recebe. RXIF é o bit 3 de INTSTAT - RX FIFO Reception Interrupt bit.
+    if (MRF_I_RXIF) {
+        flag_got_rx++;
+        // read out the packet data...
+        noInterrupts();
+        rx_disable();
+        // read start of rxfifo for, has 2 bytes more added by FCS. frame_length = m + n + 2
+        uint8_t frame_length = read_long(0x300);
+
+        // buffer all bytes in PHY Payload
+        if(bufPHY){
+            int rb_ptr = 0;
+            for (int i = 0; i < frame_length; i++) { // from 0x301 to (0x301 + frame_length -1)
+                rx_buf[rb_ptr++] = read_long(0x301 + i);
+            }
+        }
+
+        // buffer data bytes
+        int rd_ptr = 0;
+        // from (0x301 + bytes_MHR) to (0x301 + frame_length - bytes_nodata - 1)
+        for (int i = 0; i < rx_datalength(); i++) {
+            rx_info.rx_data[rd_ptr++] = read_long(0x301 + bytes_MHR + i);
+        }
+
+        rx_info.frame_length = frame_length;
+        // same as datasheet 0x301 + (m + n + 2) <-- frame_length
+        rx_info.lqi = read_long(0x301 + frame_length);
+        // same as datasheet 0x301 + (m + n + 3) <-- frame_length + 1
+        rx_info.rssi = read_long(0x301 + frame_length + 1);
+
+        rx_enable();
+        interrupts();
+    }
 }
 
 void Mrf24j::set_interrupts(void) {
     // interrupts for rx and tx normal complete
-    write_short(MRF_INTCON, 0b11110110);
+    write_short(MRF_INTCON, 0b11110110); //Habilita a interrupção de FIFO Tranmission e Reception
 }
 
 /** use the 802.15.4 channel numbers..
@@ -199,8 +250,11 @@ void Mrf24j::init(void) {
  * Only the most recent data is ever kept.
  */
 void Mrf24j::interrupt_handler(void) {
-    uint8_t last_interrupt = read_short(MRF_INTSTAT);
-    if (last_interrupt & MRF_I_RXIF) {
+    uint8_t last_interrupt = read_short(MRF_INTSTAT); //lê o reg INTSTAT (INTERRUPT STATUS REGISTER).
+    //Interrupt bits are cleared to ‘0’ when the INTSTAT register is read.
+    
+    // Quando recebe. RXIF é o bit 3 de INTSTAT - RX FIFO Reception Interrupt bit.
+    if (last_interrupt & MRF_I_RXIF) { //pag 109 datasheet
         flag_got_rx++;
         // read out the packet data...
         noInterrupts();
@@ -232,13 +286,17 @@ void Mrf24j::interrupt_handler(void) {
         rx_enable();
         interrupts();
     }
+    
+    // Quando envia. TXIF é o bit 3 de INTSTAT - RX FIFO Reception Interrupt bit.
     if (last_interrupt & MRF_I_TXNIF) {
         flag_got_tx++;
         uint8_t tmp = read_short(MRF_TXSTAT);
         // 1 means it failed, we want 1 to mean it worked.
-        tx_info.tx_ok = !(tmp & ~(1 << TXNSTAT));
-        tx_info.retries = tmp >> 6;
-        tx_info.channel_busy = (tmp & (1 << CCAFAIL));
+        
+        // Esta operação serve para verigficar se todos os bits de TXSTAT são 0, exceto o bit 0 (TXNSTAT).
+        tx_info.tx_ok = !(tmp & ~(1 << TXNSTAT)); //TXNSTAT  é o bit 0 do reg TXSTAT 
+        tx_info.retries = tmp >> 6;				//Pega os bits 6 e 7. OS bits 6 e 7 representam as tentativas.
+        tx_info.channel_busy = (tmp & (1 << CCAFAIL)); //Pega o bit 5. CCAFAIL é o bit 5 de TXSTAT. Diz se o canal está ocupado(1) ou não (0). 
     }
 }
 

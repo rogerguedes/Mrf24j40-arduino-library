@@ -219,7 +219,12 @@ class Mrf24j
          */
         void set_palna(boolean enabled);
 
-        void send16(word dest16, char * data);
+        int send16(word dest16, char * data);
+
+	/**
+	 * Criada para leitura sem interrupção. By Stephanie
+	 */
+	void leitura();
 
         void interrupt_handler(void);
 
